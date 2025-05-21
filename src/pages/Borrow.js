@@ -46,13 +46,13 @@ function Borrow() {
 
   // Available loan amounts with service fees
   const loanAmounts = [
-    { amount: 3000, serviceFee: 48 },
-    { amount: 5500, serviceFee: 48 },
-    { amount: 11800, serviceFee: 100 },
-    { amount: 14200, serviceFee: 100 },
-    { amount: 17400, serviceFee: 150 },
-    { amount: 20500, serviceFee: 150 },
-    { amount: 23070, serviceFee: 150 },
+    { amount: 3000, serviceFee: 70 },
+    { amount: 5500, serviceFee: 100 },
+    { amount: 11800, serviceFee: 150 },
+    { amount: 14200, serviceFee: 150 },
+    { amount: 17400, serviceFee: 180 },
+    { amount: 20500, serviceFee: 200 },
+    { amount: 23070, serviceFee: 200 },
   ];
 
   // Filter loans based on user's limit and assign tracking numbers
