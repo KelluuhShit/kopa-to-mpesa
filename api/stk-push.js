@@ -6,8 +6,8 @@ const axios = require('axios');
 
 module.exports = async (req, res) => {
   const allowedOrigins = [
-    'https://kopa-mobile-to-mpesa.vercel.app',
-    'https://kopa-mobile-to-mpesa.vercel.app',
+    'https://kopa-mobile-to-mpesa.verce.app',
+    'https://kopa-mobile-to-mpesa.verce.app', // For local development
   ];
   const origin = req.headers.origin;
 
@@ -39,16 +39,24 @@ module.exports = async (req, res) => {
     return res.status(400).json({ success: false, error: 'Missing phoneNumber, amount, or reference' });
   }
 
-  const formattedPhone = phoneNumber.startsWith('0') ? `254${phoneNumber.slice(1)}` : phoneNumber;
-  if (!/^(254[17]\d{8})$/.test(formattedPhone)) {
+  let formattedPhone = phoneNumber;
+  if (phoneNumber.startsWith('0')) {
+    formattedPhone = `254${phoneNumber.slice(1)}`;
+  } else if (phoneNumber.startsWith('+254')) {
+    formattedPhone = phoneNumber.slice(1);
+  }
+
+  console.log(`Formatted phone number: ${formattedPhone}`);
+
+  if (!/^(0[17]\d{8}|\+254[17]\d{8}|254[17]\d{8})$/.test(phoneNumber)) {
     console.log('Invalid phone number:', phoneNumber);
     return res.status(400).json({
       success: false,
-      error: 'Invalid phone number format. Use 07XXXXXXXX or 254XXXXXXXXX',
+      error: 'Invalid phone number format. Use 07XXXXXXXX, 01XXXXXXXX, or +254XXXXXXXXX',
     });
   }
 
-  if (isNaN(amount) || amount < 0) {
+  if (isNaN(amount) || amount < 1) {
     console.log('Invalid amount:', amount);
     return res.status(400).json({ success: false, error: 'Amount must be at least 1 KES' });
   }

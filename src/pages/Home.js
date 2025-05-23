@@ -13,9 +13,8 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { Phone, Email, Facebook, Twitter, Instagram } from '@mui/icons-material';
-import { db } from '../firebaseConfig';
+import { db, analytics, logEvent } from '../firebaseConfig';
 import { collection, query, where, getDocs } from 'firebase/firestore';
-import { analytics, logEvent } from '../firebaseConfig';
 
 function Home() {
   const navigate = useNavigate();
@@ -49,16 +48,28 @@ function Home() {
 
   const validateTrackForm = () => {
     const newErrors = {};
-    if (!trackForm.phoneNumber) {
+    let formattedPhone = trackForm.phoneNumber;
+    
+    // Normalize phone number input
+    if (!formattedPhone) {
       newErrors.phoneNumber = 'Please enter your phone number';
-    } else if (!/^07\d{8}$/.test(trackForm.phoneNumber)) {
-      newErrors.phoneNumber = 'Please enter a valid phone number (e.g., 07XXXXXXXX)';
+    } else {
+      if (formattedPhone.startsWith('+254')) {
+        formattedPhone = formattedPhone.slice(1);
+      } else if (formattedPhone.startsWith('0')) {
+        formattedPhone = `254${formattedPhone.slice(1)}`;
+      }
+      if (!/^(254[17]\d{8})$/.test(formattedPhone)) {
+        newErrors.phoneNumber = 'Please enter a valid phone number (e.g., 07XXXXXXXX or +254XXXXXXXXX)';
+      }
     }
+
     if (!trackForm.nationalId) {
       newErrors.nationalId = 'Please enter your National ID number';
     } else if (!/^\d{8,9}$/.test(trackForm.nationalId)) {
       newErrors.nationalId = 'National ID must be an 8 or 9-digit number';
     }
+
     setErrors(newErrors);
     Object.keys(newErrors).forEach((field) => {
       logEvent(analytics, 'track_loan_validation_error', {
@@ -66,40 +77,50 @@ function Home() {
         error: newErrors[field],
       });
     });
-    return Object.keys(newErrors).length === 0;
+    return { isValid: Object.keys(newErrors).length === 0, formattedPhone };
   };
 
   const handleTrackSubmit = async () => {
-    if (!validateTrackForm()) return;
+    const { isValid, formattedPhone } = validateTrackForm();
+    if (!isValid) return;
     setLoading(true);
+
     try {
-      const loansRef = collection(db, 'loans');
+      const loansRef = collection(db, 'loanTransactions'); // Updated to loanTransactions
       const q = query(
         loansRef,
-        where('phoneNumber', '==', trackForm.phoneNumber),
+        where('phoneNumber', '==', formattedPhone),
         where('nationalId', '==', trackForm.nationalId)
       );
       const querySnapshot = await getDocs(q);
+
       if (!querySnapshot.empty) {
         logEvent(analytics, 'track_loan_success', {
-          phoneNumber: trackForm.phoneNumber,
+          phoneNumber: formattedPhone,
           nationalId: trackForm.nationalId,
         });
         navigate('/loan-progress', {
-          state: { phoneNumber: trackForm.phoneNumber, nationalId: trackForm.nationalId },
+          state: { phoneNumber: formattedPhone, nationalId: trackForm.nationalId },
         });
       } else {
         logEvent(analytics, 'track_loan_not_found', {
-          phoneNumber: trackForm.phoneNumber,
+          phoneNumber: formattedPhone,
           nationalId: trackForm.nationalId,
         });
         setOpenTrackModal(false);
         setOpenErrorModal(true);
       }
     } catch (error) {
-      setErrors({ submit: 'An error occurred. Please try again.' });
+      let errorMessage = 'An error occurred. Please try again.';
+      if (error.code === 'permission-denied') {
+        errorMessage = 'Permission denied. Please contact support.';
+      } else if (error.code === 'unavailable') {
+        errorMessage = 'Server is temporarily unavailable. Please try again later.';
+      }
+      setErrors({ submit: errorMessage });
       logEvent(analytics, 'track_loan_error', {
         error: error.message,
+        code: error.code || 'unknown',
       });
     } finally {
       setLoading(false);
@@ -153,27 +174,29 @@ function Home() {
           >
             Welcome to Kopa Mobile to
             <Typography
-            variant="h1"
-            gutterBottom
-            sx={{
-              color: 'white',
-              fontWeight: 700,
-              fontSize: { xs: '1.8rem', sm: '2.2rem', md: '3rem' },
-            }}
-          >
-            M
-            <Box
-                        component="img"
-                        src={require('../assets/logo.png')}
-                        alt="M-PESA Logo"
-                        sx={{
-                          height: 28,
-                          width: 28,
-                          verticalAlign: 'middle',
-                          display: 'inline',
-                        }}
-                      />PESA
-                      </Typography> 
+              component="span"
+              variant="h1"
+              sx={{
+                color: 'white',
+                fontWeight: 700,
+                fontSize: { xs: '1.8rem', sm: '2.2rem', md: '3rem' },
+              }}
+            >
+              {' '}
+              M
+              <Box
+                component="img"
+                src={require('../assets/logo.png')}
+                alt="Kopa Mobile to M-PESA Logo"
+                sx={{
+                  height: 28,
+                  width: 28,
+                  verticalAlign: 'middle',
+                  display: 'inline',
+                }}
+              />
+              PESA
+            </Typography>
           </Typography>
           <Typography
             variant="body1"
@@ -256,7 +279,7 @@ function Home() {
           </Typography>
           <TextField
             fullWidth
-            label="Phone Number (e.g., 07XXXXXXXX)"
+            label="Phone Number (e.g., 07XXXXXXXX or +254XXXXXXXXX)"
             value={trackForm.phoneNumber}
             onChange={handleTrackChange('phoneNumber')}
             variant="outlined"
@@ -330,7 +353,7 @@ function Home() {
             No Loan Found
           </Typography>
           <Typography id="error-modal-description" variant="body1" sx={{ mb: 3 }}>
-            You need to check your eligibility and apply for a loan first.
+            No loan application was found for the provided details. Please check your eligibility and apply for a loan first.
           </Typography>
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2 }}>
             <Button

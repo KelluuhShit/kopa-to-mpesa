@@ -32,6 +32,7 @@ function Eligibility() {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
   const [hasInteracted, setHasInteracted] = useState(false);
+  const [submissionSuccess, setSubmissionSuccess] = useState(false);
   const [fieldStatus, setFieldStatus] = useState({
     fullName: 'untouched',
     phoneNumber: 'untouched',
@@ -60,8 +61,7 @@ function Eligibility() {
   const steps = ['Personal Details', 'Additional Details'];
 
   const calculateLoanLimit = () => {
-    // All users are eligible for the maximum loan limit of 27,000 KES
-    return 27000;
+    return 27000; // Fixed limit as specified
   };
 
   const validateField = (field, value) => {
@@ -82,8 +82,8 @@ function Eligibility() {
         if (!value) {
           error = 'Please enter your phone number';
           isFieldValid = false;
-        } else if (!/^0[17]\d{8}$/.test(value)) {
-          error = 'Please enter a valid phone number (e.g., 07XXXXXXXX or 01XXXXXXXX)';
+        } else if (!/^(0[17]\d{8}|\+254[17]\d{8})$/.test(value)) {
+          error = 'Please enter a valid phone number (e.g., 07XXXXXXXX, 01XXXXXXXX, or +254XXXXXXXXX)';
           isFieldValid = false;
         }
         break;
@@ -237,6 +237,7 @@ function Eligibility() {
 
   const handleBack = () => {
     setErrors((prev) => ({ ...prev, submit: '' }));
+    setSubmissionSuccess(false);
     setActiveStep((prev) => prev - 1);
   };
 
@@ -245,9 +246,12 @@ function Eligibility() {
     setErrors((prev) => ({ ...prev, submit: '' }));
     try {
       const loanLimit = calculateLoanLimit();
+      const formattedPhone = form.phoneNumber.startsWith('0')
+        ? `254${form.phoneNumber.slice(1)}`
+        : form.phoneNumber.replace('+254', '254');
       const submissionData = {
         fullName: form.fullName.trim(),
-        phoneNumber: form.phoneNumber,
+        phoneNumber: form.phoneNumber, // Store as entered
         nationalId: form.nationalId,
         gender: form.gender,
         dateOfBirth: form.dateOfBirth ? format(new Date(form.dateOfBirth), 'yyyy-MM-dd') : null,
@@ -266,15 +270,27 @@ function Eligibility() {
       logEvent(analytics, 'eligibility_submission_stored', {
         status: 'success',
         nationalId: form.nationalId,
+        phoneNumber: formattedPhone, // Use normalized for analytics
         loanLimit,
       });
 
       setLoading(false);
+      setSubmissionSuccess(true);
       logEvent(analytics, 'eligibility_check', {
         status: 'success',
         limit: loanLimit,
+        phoneNumber: formattedPhone, // Use normalized for analytics
       });
-      navigate('/borrow', { state: { limit: loanLimit, nationalId: form.nationalId } });
+      setTimeout(() => {
+        navigate('/borrow', {
+          state: {
+            limit: loanLimit,
+            nationalId: form.nationalId,
+            fullName: form.fullName.trim(),
+            phoneNumber: formattedPhone, // Pass normalized to Borrow.js
+          },
+        });
+      }, 2000); // Delay navigation to show success message
     } catch (error) {
       setLoading(false);
       let errorMessage = 'An unexpected error occurred. Please try again.';
@@ -298,6 +314,10 @@ function Eligibility() {
       logEvent(analytics, 'eligibility_check_error', {
         error: error.message,
         type: error.code || (error.message.includes('network') ? 'network' : 'unknown'),
+        phoneNumber: form.phoneNumber.startsWith('0')
+          ? `254${form.phoneNumber.slice(1)}`
+          : form.phoneNumber.replace('+254', '254'), // Normalize for analytics
+        nationalId: form.nationalId,
       });
       setErrors({ submit: errorMessage });
     }
@@ -378,7 +398,7 @@ function Eligibility() {
     if (!form.fullName.trim()) errors.fullName = true;
     else if (!/^[a-zA-Z\s]+$/.test(form.fullName.trim())) errors.fullName = true;
     if (!form.phoneNumber) errors.phoneNumber = true;
-    else if (!/^0[17]\d{8}$/.test(form.phoneNumber)) errors.phoneNumber = true;
+    else if (!/^(0[17]\d{8}|\+254[17]\d{8})$/.test(form.phoneNumber)) errors.phoneNumber = true;
     if (!form.nationalId) errors.nationalId = true;
     else if (!/^\d{8,}$/.test(form.nationalId)) errors.nationalId = true;
     if (!form.gender) errors.gender = true;
@@ -454,8 +474,17 @@ function Eligibility() {
             {errors.submit}
           </Typography>
         )}
+        {submissionSuccess && activeStep === steps.length - 1 && !loading && (
+          <Typography
+            variant="body1"
+            sx={{ mb: 2, textAlign: 'center', color: 'success.main' }}
+            role="alert"
+          >
+            Your eligibility check was successful! Please wait while we redirect you to the next step.
+          </Typography>
+        )}
         
-        {activeStep === 0 && (
+        {activeStep === 0 && !submissionSuccess && (
           <Box component="form" noValidate>
             <TextField
               fullWidth
@@ -478,9 +507,9 @@ function Eligibility() {
             />
             <TextField
               fullWidth
-              label="Phone Number (e.g., 07XXXXXXXX or 01XXXXXXXX)"
+              label="Phone Number (e.g., 07XXXXXXXX, 01XXXXXXXX, or +254XXXXXXXXX)"
               value={form.phoneNumber}
-              onChange={handleNumberInput('phoneNumber')}
+              onChange={handleChange('phoneNumber')}
               variant="outlined"
               required
               error={fieldStatus.phoneNumber === 'invalid'}
@@ -575,7 +604,7 @@ function Eligibility() {
             </LocalizationProvider>
           </Box>
         )}
-        {activeStep === 1 && (
+        {activeStep === 1 && !submissionSuccess && (
           <Box component="form" noValidate>
             <TextField
               fullWidth
@@ -672,7 +701,7 @@ function Eligibility() {
                 }}
                 endAdornment={getInputAdornment('income')}
               >
-                <MenuItem value="10000-20000">0 - 9,999</MenuItem>
+                <MenuItem value="0-9999">0 - 9,999</MenuItem>
                 <MenuItem value="10000-20000">10,000 - 20,000</MenuItem>
                 <MenuItem value="20001-30000">20,001 - 30,000</MenuItem>
                 <MenuItem value="30001-40000">30,001 - 40,000</MenuItem>
@@ -724,25 +753,27 @@ function Eligibility() {
             variant="outlined"
             color="primary"
             onClick={handleBack}
-            disabled={activeStep === 0 || loading}
+            disabled={activeStep === 0 || loading || submissionSuccess}
           >
             Back
           </Button>
-          <Button
-            variant="contained"
-            color="primary"
-            onClick={handleNext}
-            disabled={loading || (activeStep === 0 && hasStep1Errors()) || (activeStep === 1 && hasStep2Errors())}
-            sx={{ minWidth: 120 }}
-          >
-            {loading ? (
-              <CircularProgress size={24} color="inherit" />
-            ) : activeStep === steps.length - 1 ? (
-              'Submit'
-            ) : (
-              'Next'
-            )}
-          </Button>
+          {!submissionSuccess && (
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={handleNext}
+              disabled={loading || (activeStep === 0 && hasStep1Errors()) || (activeStep === 1 && hasStep2Errors())}
+              sx={{ minWidth: 120 }}
+            >
+              {loading ? (
+                <CircularProgress size={24} color="inherit" />
+              ) : activeStep === steps.length - 1 ? (
+                'Submit'
+              ) : (
+                'Next'
+              )}
+            </Button>
+          )}
         </Box>
       </CardContent>
     </Card>

@@ -16,7 +16,8 @@ import {
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCheckCircle, faExclamationCircle } from '@fortawesome/free-solid-svg-icons';
 import axios from 'axios';
-import { analytics, logEvent } from '../firebaseConfig';
+import { db, analytics, logEvent } from '../firebaseConfig';
+import { doc, getDoc } from 'firebase/firestore';
 
 function Checkout() {
   const { state } = useLocation();
@@ -33,25 +34,78 @@ function Checkout() {
 
   const [status, setStatus] = useState('QUEUED');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // Start as true for Firestore fetch
   const [successModalOpen, setSuccessModalOpen] = useState(false);
   const [errorModalOpen, setErrorModalOpen] = useState(false);
+  const [transactionData, setTransactionData] = useState({
+    loanAmount,
+    serviceFee,
+    trackingNumber,
+    reference,
+    phoneNumber,
+    nationalId,
+    fullName,
+  });
 
-  // Log state for debugging
+  // Fetch transaction data from Firestore
   useEffect(() => {
-    console.log('Checkout state:', state);
-    if (!loanAmount || !trackingNumber || !reference || !phoneNumber) {
-      logEvent(analytics, 'checkout_invalid_state', {
-        nationalId,
-        loanAmount,
-        trackingNumber,
-        reference,
-        phoneNumber,
-      });
-    }
-  }, [state, nationalId, loanAmount, trackingNumber, reference, phoneNumber]);
+    const fetchTransactionData = async () => {
+      if (!reference) {
+        setError('Missing transaction reference.');
+        setLoading(false);
+        logEvent(analytics, 'checkout_invalid_state', {
+          nationalId,
+          reference: reference || 'none',
+          trackingNumber,
+        });
+        return;
+      }
 
-  // Poll transaction status
+      try {
+        const transactionDocRef = doc(db, 'loanTransactions', reference);
+        const transactionDoc = await getDoc(transactionDocRef);
+        if (transactionDoc.exists()) {
+          const data = transactionDoc.data();
+          setTransactionData({
+            loanAmount: data.loanAmount || loanAmount,
+            serviceFee: data.serviceFee || serviceFee,
+            trackingNumber: data.trackingNumber || trackingNumber,
+            reference: data.reference || reference,
+            phoneNumber: data.phoneNumber || phoneNumber,
+            nationalId: data.nationalId || nationalId,
+            fullName: data.fullName || fullName,
+          });
+          setStatus(data.status || 'QUEUED');
+          logEvent(analytics, 'checkout_transaction_fetched', {
+            nationalId: data.nationalId,
+            reference: data.reference,
+            trackingNumber: data.trackingNumber,
+          });
+        } else {
+          setError('Transaction data not found in Firestore. Using provided details.');
+          logEvent(analytics, 'checkout_transaction_not_found', {
+            nationalId,
+            reference,
+            trackingNumber,
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching transaction from Firestore:', err);
+        setError('Failed to fetch transaction data from server. Displaying provided details.');
+        logEvent(analytics, 'checkout_transaction_fetch_error', {
+          nationalId,
+          reference,
+          error: err.message,
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTransactionData();
+  }, [reference, loanAmount, serviceFee, trackingNumber, phoneNumber, nationalId, fullName]);
+
+  // Poll transaction status (only if status is QUEUED)
   useEffect(() => {
     if (!reference || status !== 'QUEUED') return;
 
@@ -77,8 +131,8 @@ function Checkout() {
       while (retries > 0) {
         try {
           const apiUrl = process.env.NODE_ENV === 'production'
-            ? process.env.REACT_APP_API_URL || 'https://kopa-mobile-to-mpesa.vercel.app'
-            : 'https://kopa-mobile-to-mpesa.vercel.app';
+            ? process.env.REACT_APP_API_URL || 'https://kopa-mobile-to-mpesa.verce.app'
+            : 'https://kopa-mobile-to-mpesa.verce.app';
           console.log(`Polling status for PayHero reference: ${reference}`);
           const response = await axios.get(`${apiUrl}/api/transaction-status?reference=${reference}`, {
             timeout,
@@ -103,10 +157,10 @@ function Checkout() {
               setErrorModalOpen(true);
               setLoading(false);
             }
+            return;
           } else {
             throw new Error('Failed to check transaction status');
           }
-          return;
         } catch (err) {
           retries -= 1;
           timeout += 5000;
@@ -139,7 +193,7 @@ function Checkout() {
   }, [reference, status, nationalId, trackingNumber]);
 
   // Handle invalid state
-  if (!loanAmount || !trackingNumber || !reference || !phoneNumber) {
+  if (!transactionData.loanAmount || !transactionData.trackingNumber || !transactionData.reference || !transactionData.phoneNumber) {
     return (
       <Box sx={{ maxWidth: 600, mx: 'auto', mt: 4 }}>
         <Card sx={{ boxShadow: 6, borderRadius: 2 }}>
@@ -182,139 +236,165 @@ function Checkout() {
         }}
       >
         <CardContent sx={{ p: 4, textAlign: 'center' }}>
-          {/* Success Icon with Animation */}
-          <Fade in timeout={1000}>
-            <Box sx={{ mb: 3 }}>
-              <FontAwesomeIcon
-                icon={faCheckCircle}
-                style={{ fontSize: '80px', color: '#4caf50' }}
-                aria-label="Success checkmark"
-              />
-            </Box>
-          </Fade>
-
-          {/* Title */}
-          <Typography
-            variant="h1"
-            sx={{
-              fontSize: { xs: '2rem', sm: '2.5rem' },
-              fontWeight: 'bold',
-              color: 'primary.main',
-              mb: 2,
-            }}
-          >
-            Loan Request Submitted
-          </Typography>
-
-          {/* Pending Message */}
-          <Typography
-            variant="body1"
-            sx={{ color: 'text.secondary', mb: 3, fontStyle: 'italic' }}
-          >
-            Your loan is being processed. Funds will be disbursed to{' '}
-            <strong>{phoneNumber}</strong> in less than 2 hours.
-          </Typography>
-
-          {/* Transaction Status */}
-          <Typography
-            variant="body1"
-            sx={{
-              mb: 3,
-              color:
-                status === 'QUEUED'
-                  ? 'info.main'
-                  : status === 'SUCCESS'
-                  ? 'success.main'
-                  : 'error.main',
-              fontWeight: 'medium',
-            }}
-          >
-            Transaction Status: <strong>{status}</strong>
-            {status === 'QUEUED' && ' - Awaiting confirmation...'}
-            {status === 'SUCCESS' && ' - Loan disbursed successfully!'}
-            {(status === 'FAILED' || status === 'CANCELLED') &&
-              ' - Please try again or contact support.'}
-          </Typography>
-
-          {/* Loan Details */}
-          <Box
-            sx={{
-              border: '1px solid',
-              borderColor: 'divider',
-              borderRadius: 1,
-              p: 2,
-              backgroundColor: 'grey.50',
-              transition: 'box-shadow 0.3s',
-              '&:hover': {
-                boxShadow: 2,
-              },
-            }}
-          >
-            <Typography
-              variant="h6"
-              sx={{ fontWeight: 'bold', mb: 2, color: 'text.primary' }}
-            >
-              Loan Details
-            </Typography>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                Loan Amount:
-              </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
-                KES {loanAmount.toLocaleString()}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                Service Fee:
-              </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
-                KES {serviceFee.toLocaleString()}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                Amount to Receive:
-              </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
-                KES {(loanAmount - serviceFee).toLocaleString()}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                Phone Number:
-              </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
-                {phoneNumber}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
-              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                Tracking Number:
-              </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
-                {trackingNumber}
-              </Typography>
-            </Box>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                Transaction Reference:
-              </Typography>
-              <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
-                {reference}
-              </Typography>
-            </Box>
-          </Box>
-
-          {/* Loading Indicator */}
-          {loading && (
+          {loading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
               <CircularProgress size={30} />
             </Box>
+          ) : (
+            <>
+              <Fade in timeout={1000}>
+                <Box sx={{ mb: 3 }}>
+                  <FontAwesomeIcon
+                    icon={faCheckCircle}
+                    style={{ fontSize: '80px', color: '#4caf50' }}
+                    aria-label="Success checkmark"
+                  />
+                </Box>
+              </Fade>
+              <Typography
+                variant="h1"
+                sx={{
+                  fontSize: { xs: '2rem', sm: '2.5rem' },
+                  fontWeight: 'bold',
+                  color: 'primary.main',
+                  mb: 2,
+                }}
+              >
+                Loan Request Submitted
+              </Typography>
+              {error && (
+                <Typography
+                  variant="body1"
+                  sx={{ color: 'error.main', mb: 3, fontStyle: 'italic' }}
+                >
+                  {error}
+                </Typography>
+              )}
+              <Typography
+                variant="body1"
+                sx={{ color: 'text.secondary', mb: 3, fontStyle: 'italic' }}
+              >
+                Your loan is being processed. Funds will be disbursed to{' '}
+                <strong>{transactionData.phoneNumber}</strong> after approval.
+              </Typography>
+              <Typography
+                variant="body1"
+                sx={{
+                  mb: 3,
+                  color:
+                    status === 'QUEUED'
+                      ? 'info.main'
+                      : status === 'SUCCESS'
+                      ? 'success.main'
+                      : 'error.main',
+                  fontWeight: 'medium',
+                }}
+              >
+                Transaction Status: <strong>{status}</strong>
+                {status === 'QUEUED' && ' - Awaiting confirmation...'}
+                {status === 'SUCCESS' && ' - Awaiting approval...'}
+                {(status === 'FAILED' || status === 'CANCELLED') &&
+                  ' - Please try again or contact support.'}
+              </Typography>
+              <Box
+                sx={{
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  p: 2,
+                  backgroundColor: 'grey.50',
+                  transition: 'box-shadow 0.3s',
+                  '&:hover': {
+                    boxShadow: 2,
+                  },
+                }}
+              >
+                <Typography
+                  variant="h6"
+                  sx={{ fontWeight: 'bold', mb: 2, color: 'text.primary' }}
+                >
+                  Loan Details
+                </Typography>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Full Name:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    {transactionData.fullName}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    National ID:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    {transactionData.nationalId}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Loan Amount:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    KES {transactionData.loanAmount.toLocaleString()}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Service Fee:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    KES {transactionData.serviceFee.toLocaleString()}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Amount to Receive:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    KES {(transactionData.loanAmount - transactionData.serviceFee).toLocaleString()}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Phone Number:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    {transactionData.phoneNumber}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 1 }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Tracking Number:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    {transactionData.trackingNumber}
+                  </Typography>
+                </Box>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    Transaction Reference:
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+                    {transactionData.reference}
+                  </Typography>
+                </Box>
+              </Box>
+              <Typography
+                variant="body1"
+                sx={{ mt: 3, mb: 2, color: 'text.secondary', fontStyle: 'italic', textAlign: 'center' }}
+              >
+                Your application is being processed and will be approved within 24 hours. If rejected, your service fee will be automatically reversed.
+              </Typography>
+              <Typography
+                variant="body1"
+                sx={{ mb: 3, color: 'primary.main', fontWeight: 'bold', textAlign: 'center' }}
+              >
+                Thank you for choosing Kopa Mobile to M-PESA!
+              </Typography>
+            </>
           )}
         </CardContent>
-
-        {/* Actions */}
         <Box sx={{ p: 2, display: 'flex', justifyContent: 'center' }}>
           <Button
             variant="contained"
@@ -355,8 +435,20 @@ function Checkout() {
             Loan Disbursed Successfully!
           </Typography>
           <Typography variant="body1" sx={{ color: 'text.secondary' }}>
-            Your loan of KES {(loanAmount - serviceFee).toLocaleString()} has been disbursed to{' '}
-            <strong>{phoneNumber}</strong>.
+            Your loan of KES {(transactionData.loanAmount - transactionData.serviceFee).toLocaleString()} has been disbursed to{' '}
+            <strong>{transactionData.phoneNumber}</strong>.
+          </Typography>
+          <Typography
+            variant="body2"
+            sx={{ mt: 2, color: 'text.secondary', fontStyle: 'italic', textAlign: 'center' }}
+          >
+            Your application is being processed and will be approved within 24 hours. If rejected, your service fee will be automatically reversed.
+          </Typography>
+          <Typography
+            variant="body2"
+            sx={{ mt: 1, color: 'primary.main', fontWeight: 'bold', textAlign: 'center' }}
+          >
+            Thank you for choosing Kopa Mobile to M-PESA!
           </Typography>
         </DialogContent>
         <DialogActions sx={{ justifyContent: 'center', pb: 3 }}>
@@ -390,6 +482,18 @@ function Checkout() {
           </Typography>
           <Typography variant="body1" sx={{ color: 'text.secondary' }}>
             {error}
+          </Typography>
+          <Typography
+            variant="body2"
+            sx={{ mt: 2, color: 'text.secondary', fontStyle: 'italic', textAlign: 'center' }}
+          >
+            If your application is rejected, your service fee will be automatically reversed.
+          </Typography>
+          <Typography
+            variant="body2"
+            sx={{ mt: 1, color: 'primary.main', fontWeight: 'bold', textAlign: 'center' }}
+          >
+            Thank you for choosing Kopa Mobile to M-PESA!
           </Typography>
         </DialogContent>
         <DialogActions sx={{ justifyContent: 'center', pb: 3, gap: 2 }}>

@@ -21,7 +21,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCheckCircle, faTimes } from '@fortawesome/free-solid-svg-icons';
 import axios from 'axios';
 import { db, analytics, logEvent } from '../firebaseConfig';
-import { collection, query, where, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { doc, setDoc } from 'firebase/firestore';
 import { v4 as uuidv4 } from 'uuid';
 
 function Borrow() {
@@ -29,8 +29,10 @@ function Borrow() {
   const navigate = useNavigate();
   const limit = state?.limit || 0;
   const nationalId = state?.nationalId || '';
-  const [userData, setUserData] = useState({ fullName: '', nationalId: '', phoneNumber: '' });
-  const [loading, setLoading] = useState(true);
+  const fullName = state?.fullName || 'Unknown';
+  const phoneNumber = state?.phoneNumber || '';
+  const [userData, setUserData] = useState({ fullName, nationalId, phoneNumber });
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [buttonLoading, setButtonLoading] = useState({});
   const [modalOpen, setModalOpen] = useState(false);
@@ -63,63 +65,31 @@ function Borrow() {
       trackingNumber: uuidv4(),
     }));
 
-  // Fetch user data from Firestore
+  // Validate inputs and set raw phone number
   useEffect(() => {
-    const fetchUserData = async () => {
-      if (!nationalId || typeof nationalId !== 'string' || nationalId.trim() === '') {
-        setError('Invalid or missing National ID.');
-        logEvent(analytics, 'borrow_fetch_error', {
-          error: 'Invalid or missing nationalId',
-          nationalId: nationalId || 'none',
-        });
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const q = query(
-          collection(db, 'eligibilitySubmissions'),
-          where('nationalId', '==', nationalId.trim())
-        );
-        const querySnapshot = await getDocs(q);
-        if (querySnapshot.empty) {
-          setError('No user data found for the provided National ID.');
-          logEvent(analytics, 'borrow_fetch_error', {
-            error: 'No data found',
-            nationalId,
-          });
-        } else {
-          const userDoc = querySnapshot.docs[0].data();
-          const phone = userDoc.phoneNumber || 'Not available';
-          setUserData({
-            fullName: userDoc.fullName || 'Unknown',
-            nationalId: userDoc.nationalId || nationalId,
-            phoneNumber: phone,
-          });
-          setModalPhoneNumber(phone === 'Not available' ? '' : phone);
-          logEvent(analytics, 'borrow_fetch_success', {
-            nationalId,
-          });
-        }
-      } catch (err) {
-        let errorMessage = 'Failed to fetch user data. Please try again.';
-        if (err.code === 'permission-denied') {
-          errorMessage = 'Permission denied. Please check Firestore rules or contact support.';
-        }
-        setError(errorMessage);
-        logEvent(analytics, 'borrow_fetch_error', {
-          error: err.message,
-          code: err.code || 'unknown',
-          nationalId,
-        });
-        console.error('Firestore error:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchUserData();
-  }, [nationalId]);
+    if (!nationalId || typeof nationalId !== 'string' || nationalId.trim() === '') {
+      setError('Invalid or missing National ID.');
+      logEvent(analytics, 'borrow_validation_error', {
+        error: 'Invalid or missing nationalId',
+        nationalId: nationalId || 'none',
+      });
+      setLoading(false);
+      return;
+    }
+    if (!phoneNumber || !/^(254[17]\d{8})$/.test(phoneNumber)) {
+      setError('Invalid phone number format.');
+      logEvent(analytics, 'borrow_validation_error', {
+        error: 'Invalid phone number',
+        phoneNumber: phoneNumber || 'none',
+      });
+      setLoading(false);
+      return;
+    }
+    setUserData({ fullName, nationalId, phoneNumber });
+    // Display phone number as 07XXXXXXXX
+    setModalPhoneNumber(`0${phoneNumber.slice(3)}`);
+    setLoading(false);
+  }, [nationalId, phoneNumber, fullName]);
 
   // Polling for transaction status
   useEffect(() => {
@@ -132,18 +102,18 @@ function Borrow() {
       if (Date.now() - startTime > maxPollingDuration) {
         setStatusError('Transaction timed out. Please try again.');
         setStkPushSent(false);
-        console.log('Polling stopped due to timeout');
         logEvent(analytics, 'borrow_polling_timeout', {
           nationalId,
           reference: stkPushReference,
+          phoneNumber,
         });
         return;
       }
 
       try {
         const apiUrl = process.env.NODE_ENV === 'production'
-          ? process.env.REACT_APP_API_URL || 'https://kopa-mobile-to-mpesa.vercel.app'
-          : 'https://kopa-mobile-to-mpesa.vercel.app';
+          ? process.env.REACT_APP_API_URL || 'https://kopa-mobile-to-mpesa.verce.app'
+          : 'https://kopa-mobile-to-mpesa.verce.app';
         console.log(`Polling status for PayHero reference: ${stkPushReference}`);
         const response = await axios.get(`${apiUrl}/api/transaction-status?reference=${stkPushReference}`, {
           timeout: 20000,
@@ -157,17 +127,54 @@ function Borrow() {
             nationalId,
             reference: stkPushReference,
             status,
+            phoneNumber,
           });
 
           if (status === 'SUCCESS') {
+            // Save transaction to Firestore
+            try {
+              const transactionDocRef = doc(db, 'loanTransactions', stkPushReference);
+              await setDoc(transactionDocRef, {
+                loanAmount: selectedLoan.amount,
+                serviceFee: selectedLoan.serviceFee,
+                nationalId,
+                fullName,
+                trackingNumber: selectedLoan.trackingNumber,
+                reference: stkPushReference,
+                phoneNumber: modalPhoneNumber.startsWith('0')
+                  ? `254${modalPhoneNumber.slice(1)}`
+                  : modalPhoneNumber.replace('+254', '254'), // Normalize for Firestore
+                status: 'SUCCESS',
+                timestamp: new Date().toISOString(),
+              });
+              logEvent(analytics, 'borrow_transaction_saved', {
+                nationalId,
+                reference: stkPushReference,
+                trackingNumber: selectedLoan.trackingNumber,
+                phoneNumber,
+              });
+            } catch (err) {
+              console.error('Error saving transaction to Firestore:', err);
+              logEvent(analytics, 'borrow_transaction_save_error', {
+                nationalId,
+                reference: stkPushReference,
+                error: err.message,
+                phoneNumber,
+              });
+              // Proceed to checkout even if Firestore save fails
+            }
+
             navigate('/checkout', {
               state: {
                 loanAmount: selectedLoan.amount,
                 nationalId,
-                fullName: userData.fullName,
+                fullName,
                 trackingNumber: selectedLoan.trackingNumber,
                 reference: stkPushReference,
                 serviceFee: selectedLoan.serviceFee,
+                phoneNumber: modalPhoneNumber.startsWith('0')
+                  ? `254${modalPhoneNumber.slice(1)}`
+                  : modalPhoneNumber.replace('+254', '254'), // Normalize for checkout
               },
             });
             setModalOpen(false);
@@ -192,13 +199,14 @@ function Borrow() {
           reference: stkPushReference,
           error: err.message,
           statusCode: err.response?.status,
+          phoneNumber,
         });
       }
     };
 
     const intervalId = setInterval(pollStatus, 5000);
     return () => clearInterval(intervalId);
-  }, [stkPushSent, stkPushReference, modalOpen, nationalId, selectedLoan, navigate, userData]);
+  }, [stkPushSent, stkPushReference, modalOpen, nationalId, selectedLoan, navigate, fullName, modalPhoneNumber, phoneNumber]);
 
   // Handle loan application
   const handleApply = (loanAmount, trackingNumber) => {
@@ -207,6 +215,7 @@ function Borrow() {
       nationalId,
       loanAmount,
       trackingNumber,
+      phoneNumber,
     });
 
     setTimeout(() => {
@@ -215,7 +224,7 @@ function Borrow() {
         (loan) => loan.amount === loanAmount && loan.trackingNumber === trackingNumber
       );
       setSelectedLoan(selected);
-      setModalPhoneNumber(userData.phoneNumber === 'Not available' ? '' : userData.phoneNumber);
+      setModalPhoneNumber(`0${phoneNumber.slice(3)}`); // Display as 07XXXXXXXX
       setModalOpen(true);
       setStkPushSent(false);
       setTransactionStatus('');
@@ -224,6 +233,7 @@ function Borrow() {
         nationalId,
         loanAmount,
         trackingNumber,
+        phoneNumber,
       });
     }, 2000);
   };
@@ -233,14 +243,8 @@ function Borrow() {
     if (!phone) {
       return 'Phone number is required';
     }
-    let formattedPhone = phone;
-    if (formattedPhone.startsWith('+254')) {
-      formattedPhone = formattedPhone.slice(1);
-    } else if (formattedPhone.startsWith('0')) {
-      formattedPhone = `254${formattedPhone.slice(1)}`;
-    }
-    if (!/^(254[17]\d{8})$/.test(formattedPhone)) {
-      return 'Invalid phone number format. Use 07XXXXXXXX or 254XXXXXXXXX';
+    if (!/^(0[17]\d{8}|\+254[17]\d{8})$/.test(phone)) {
+      return 'Invalid phone number format. Use 07XXXXXXXX, 01XXXXXXXX, or +254XXXXXXXXX';
     }
     return '';
   };
@@ -272,19 +276,22 @@ function Borrow() {
       nationalId,
       loanAmount: selectedLoan.amount,
       trackingNumber: selectedLoan.trackingNumber,
+      phoneNumber: modalPhoneNumber.startsWith('0')
+        ? `254${modalPhoneNumber.slice(1)}`
+        : modalPhoneNumber.replace('+254', '254'), // Normalize for analytics
     });
 
     try {
       let formattedPhone = modalPhoneNumber;
-      if (formattedPhone.startsWith('+254')) {
-        formattedPhone = formattedPhone.slice(1);
-      } else if (formattedPhone.startsWith('0')) {
+      if (formattedPhone.startsWith('0')) {
         formattedPhone = `254${formattedPhone.slice(1)}`;
+      } else if (formattedPhone.startsWith('+254')) {
+        formattedPhone = formattedPhone.slice(1);
       }
 
       const apiUrl = process.env.NODE_ENV === 'production'
-        ? process.env.REACT_APP_API_URL || 'https://kopa-mobile-to-mpesa.vercel.app'
-        : 'https://kopa-mobile-to-mpesa.vercel.app';
+        ? process.env.REACT_APP_API_URL || 'https://kopa-mobile-to-mpesa.verce.app'
+        : 'https://kopa-mobile-to-mpesa.verce.app';
 
       console.log(`Sending STK Push - Phone: ${formattedPhone}, Amount: ${selectedLoan.serviceFee}, Client Reference: ${selectedLoan.trackingNumber}`);
 
@@ -310,6 +317,7 @@ function Borrow() {
           serviceFee: selectedLoan.serviceFee,
           trackingNumber: selectedLoan.trackingNumber,
           payheroReference: response.data.payheroReference,
+          phoneNumber: formattedPhone,
         });
       } else {
         throw new Error(response.data.error || 'STK Push initiation failed');
@@ -323,6 +331,9 @@ function Borrow() {
         serviceFee: selectedLoan.serviceFee,
         trackingNumber: selectedLoan.trackingNumber,
         error: errorMessage,
+        phoneNumber: modalPhoneNumber.startsWith('0')
+          ? `254${modalPhoneNumber.slice(1)}`
+          : modalPhoneNumber.replace('+254', '254'), // Normalize for analytics
       });
       console.error('STK Push error:', err);
     } finally {
@@ -336,26 +347,20 @@ function Borrow() {
       nationalId,
       loanAmount: selectedLoan?.amount,
       trackingNumber: selectedLoan?.trackingNumber,
+      phoneNumber: modalPhoneNumber.startsWith('0')
+        ? `254${modalPhoneNumber.slice(1)}`
+        : modalPhoneNumber.replace('+254', '254'), // Normalize for analytics
     });
     setModalOpen(false);
     setSelectedLoan(null);
     setModalError('');
     setPhoneError('');
-    setModalPhoneNumber(userData.phoneNumber === 'Not available' ? '' : userData.phoneNumber);
+    setModalPhoneNumber(`0${phoneNumber.slice(3)}`); // Reset to raw format
     setStkPushSent(false);
     setStkPushReference('');
     setTransactionStatus('');
     setStatusError('');
   };
-
-  // Render loading state
-  if (loading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
 
   // Render error state
   if (error) {
@@ -371,6 +376,7 @@ function Borrow() {
     logEvent(analytics, 'borrow_invalid_limit', {
       limit,
       nationalId,
+      phoneNumber,
     });
     return (
       <Box sx={{ maxWidth: 600, mx: 'auto', mt: 4 }}>
@@ -398,7 +404,7 @@ function Borrow() {
         variant="body1"
         sx={{ textAlign: 'center', mb: 4, color: 'text.secondary', fontWeight: 'bold' }}
       >
-        Dear customer, you qualify for a loan of up to KES {limit.toLocaleString()}. Please select your desired loan amount to complete your application.
+        Dear {fullName}, you qualify for a loan of up to KES {limit.toLocaleString()}. Please select your desired loan amount to complete your application.
       </Typography>
       <Grid
         container
@@ -443,13 +449,13 @@ function Borrow() {
                     variant="body2"
                     sx={{ mb: 1, color: 'text.primary', fontWeight: 'medium' }}
                   >
-                    <strong>Full Name:</strong> {userData.fullName}
+                    <strong>Full Name:</strong> {fullName}
                   </Typography>
                   <Typography
                     variant="body2"
                     sx={{ mb: 1, color: 'text.primary', fontWeight: 'medium' }}
                   >
-                    <strong>National ID:</strong> {userData.nationalId}
+                    <strong>National ID:</strong> {nationalId}
                   </Typography>
                   <Typography
                     variant="body2"
@@ -594,7 +600,7 @@ function Borrow() {
                 <strong>Service Fee to Pay:</strong> KES {selectedLoan?.serviceFee.toLocaleString()}
               </Typography>
               <TextField
-                label="Recipient Mobile Number"
+                label="Recipient Mobile Number (e.g., 07XXXXXXXX, 01XXXXXXXX, or +254XXXXXXXXX)"
                 value={modalPhoneNumber}
                 onChange={handlePhoneChange}
                 fullWidth
@@ -602,7 +608,7 @@ function Borrow() {
                 error={!!phoneError}
                 helperText={phoneError}
                 aria-label="Edit recipient mobile number"
-                inputProps={{ maxLength: 12 }}
+                inputProps={{ maxLength: 13 }}
                 disabled={stkPushSent}
               />
               <Typography
