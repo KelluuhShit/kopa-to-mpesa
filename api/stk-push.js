@@ -6,8 +6,8 @@ const axios = require('axios');
 
 module.exports = async (req, res) => {
   const allowedOrigins = [
-    'https://kopa-mobile-to-mpesa.verce.app',
-    'https://kopa-mobile-to-mpesa.verce.app', // For local development
+    'https://kopa-mobile-to-mpesa.vercel.app',
+    'https://kopa-mobile-to-mpesa.vercel.app', // For local development
   ];
   const origin = req.headers.origin;
 
