@@ -218,7 +218,7 @@ function Home() {
               fontSize: { xs: '1.5rem', md: '1.8rem' },
             }}
           >
-            Get up to KES 20,000+ on your first application!
+            Get up to KES 30,000+ on your first application!
           </Typography>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
             <Button
