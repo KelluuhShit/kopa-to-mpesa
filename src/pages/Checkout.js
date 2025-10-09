@@ -131,8 +131,8 @@ function Checkout() {
       while (retries > 0) {
         try {
           const apiUrl = process.env.NODE_ENV === 'production'
-            ? process.env.REACT_APP_API_URL || 'http://localhost:3000'
-            : 'http://localhost:3000';
+            ? process.env.REACT_APP_API_URL || 'https://kopa-mobile-to-mpesa.vercel.app'
+            : 'https://kopa-mobile-to-mpesa.vercel.app';
           console.log(`Polling status for PayHero reference: ${reference}`);
           const response = await axios.get(`${apiUrl}/api/transaction-status?reference=${reference}`, {
             timeout,
