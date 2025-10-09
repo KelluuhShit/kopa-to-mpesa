@@ -6,8 +6,8 @@ const axios = require('axios');
 
 module.exports = async (req, res) => {
   const allowedOrigins = [
-    'https://kopa-mobile-to-mpesa.vercel.app',
-    'https://kopa-mobile-to-mpesa.vercel.app', // For local development
+    'http://localhost:3000',
+    'http://localhost:3000', // For local development
   ];
   const origin = req.headers.origin;
 
@@ -81,7 +81,7 @@ module.exports = async (req, res) => {
     const payload = {
       amount: Number(amount),
       phone_number: formattedPhone,
-      channel_id: 3661,
+      channel_id: 3664,
       provider: 'm-pesa',
       external_reference: reference,
       callback_url: callbackUrl,
